@@ -1,5 +1,5 @@
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pytz import UTC
+import json
 
 
 # Настройка логирования
@@ -28,6 +29,7 @@ dp = Dispatcher()
 
 
 message_mapping = {}  # Маппинг сообщений {group_message_id: user_message_id}
+banned_users = set()
 
 # Словарь для методов отправки медиа
 MEDIA_HANDLERS = {
@@ -36,6 +38,14 @@ MEDIA_HANDLERS = {
     "document": bot.send_document,
     "animation": bot.send_animation,  
 }
+
+async def is_admin(user_id: int) -> bool:
+    try:
+        chat_member = await bot.get_chat_member(GROUP_ID, user_id)
+        return chat_member.status in ["administrator", "creator"]
+    except Exception as e:
+        logger.error(f"Ошибка при проверке статуса администратора: {e}")
+        return False
 
 # Функция для извлечения ID пользователя из сообщения
 def extract_user_id(reply_message: Message) -> int:
@@ -80,18 +90,61 @@ async def send_welcome(message: types.Message):
     await message.reply("Привет, автор!\n\nТы пишешь стихотворения или прозу? Тогда ты по адресу. Я — бот литературного журнала «Чатл», и через меня ты можешь отправить своё произведение на рассмотрение редакции.\n\nЧто дальше?\n— Мы внимательно прочитаем твой текст.\n— Дадим обратную связь, если она нужна.\n— А главное — у тебя есть шанс увидеть своё произведение на странице «Чатла»!\n\nПоэзия живёт, пока её читают. Делись своим творчеством — и, возможно, именно твой текст зацепит читателя за живое. Мы ждем тебя!")
 
 # Обработчик текстовых сообщений от пользователя
-@dp.message(lambda message: message.chat.type == "private" and message.text)
+@dp.message(lambda message: message.chat.type == "private" and message.text and not message.text.startswith('/'))
 async def forward_to_group(message: Message):
     logger.info("Обработчик forward_to_group вызван")
+    
+    # Проверяем, не забанен ли пользователь
+    if message.from_user.id in banned_users:
+        await message.reply("Вы заблокированы администратором. Обратитесь в редакцию для разрешения ситуации.")
+        return
+    
     sent_message = await bot.send_message(
         chat_id=GROUP_ID,
-        text=f"Сообщение от {message.from_user.full_name} (@{message.from_user.username}):\n\n{message.text}\n\nID пользователя: #ID{message.from_user.id}"
+        text=f"Сообщение от {message.from_user.full_name} (@{message.from_user.username or 'без юзернейма'}):\n\n{message.text}\n\nID пользователя: #ID{message.from_user.id}"
     )
     # Сохраняем ID сообщения в группе и у пользователя
     message_mapping[sent_message.message_id] = {
         "user_id": message.from_user.id,
-        "user_message_id": message.message_id  # Сохраняем ID сообщения пользователя (нам это не нужно в данном случае)
+        "user_message_id": message.message_id
     }
+
+
+@dp.message(lambda message: message.chat.type == "private" and (message.photo or message.video or message.document or message.animation))
+async def forward_media_to_group(message: Message):
+    logger.info("Обработчик forward_media_to_group вызван")
+    
+    # Проверяем, не забанен ли пользователь
+    if message.from_user.id in banned_users:
+        await message.reply("Вы заблокированы администратором. Обратитесь в редакцию для разрешения ситуации.")
+        return
+
+    # Определяем тип медиа
+    if message.photo:
+        media = message.photo[-1]
+        media_type = "photo"
+    elif message.video:
+        media = message.video
+        media_type = "video"
+    elif message.document:
+        media = message.document
+        media_type = "document"
+    elif message.animation:
+        media = message.animation
+        media_type = "animation"
+    else:
+        return
+
+    # Отправляем медиа в группу
+    caption = f"Медиа от {message.from_user.full_name} (@{message.from_user.username or 'без юзернейма'}):\n\n{message.caption or ''}\n\nID пользователя: #ID{message.from_user.id}"
+    sent_message = await send_media(GROUP_ID, media_type, media.file_id, caption)
+
+    if sent_message:
+        # Сохраняем ID сообщения в группе и у пользователя
+        message_mapping[sent_message.message_id] = {
+            "user_id": message.from_user.id,
+            "user_message_id": message.message_id
+        }
 
 # Обработчик медиа вложений от пользователя
 @dp.message(lambda message: message.chat.type == "private" and (message.photo or message.video or message.document or message.animation))
@@ -246,8 +299,156 @@ async def handle_edited_message(message: Message):
             text="Редактирование медиа невозможно. Пожалуйста, свяжитесь с редакцией для уточнения."
         )
 
+
+
+
+
+@dp.message(Command("ban"))
+async def ban_user(message: Message, command: CommandObject):
+    logger.info(f"Вызвана команда /ban с аргументами: {command.args}")
+   
+    # Проверяем, что команда вызвана в группе
+    if message.chat.id != GROUP_ID:
+        return
+   
+    # Проверяем, что пользователь является администратором
+    if not await is_admin(message.from_user.id):
+        await message.reply("У вас недостаточно прав для выполнения этой команды.")
+        return
+   
+    # Проверяем, что указан ID пользователя
+    if not command.args:
+        await message.reply("Пожалуйста, укажите ID пользователя для блокировки.\nПример: /ban #ID12345")
+        return
+   
+    try:
+        # Обрабатываем ID формата #ID12345
+        user_id_str = command.args.strip()
+        
+        # Проверяем формат ID
+        if user_id_str.startswith("#ID"):
+            # Сохраняем ID в оригинальном формате для отображения
+            original_id = user_id_str
+            # Извлекаем числовую часть, удаляя префикс "#ID"
+            numeric_id = int(user_id_str[3:])
+        else:
+            # Пробуем обработать как обычный числовой ID
+            numeric_id = int(user_id_str)
+            original_id = str(numeric_id)
+       
+        # Добавляем пользователя в список забаненных
+        banned_users.add(numeric_id)
+       
+        # Отправляем уведомление о бане пользователю
+        try:
+            await bot.send_message(
+                chat_id=numeric_id,
+                text="Вы были заблокированы администратором журнала. Если вы считаете, что произошла ошибка, пожалуйста, свяжитесь с редакцией другим способом."
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление о бане пользователю {original_id}: {e}")
+       
+        # Подтверждаем бан в группе
+        await message.reply(f"Пользователь с ID {original_id} успешно заблокирован.")
+        logger.info(f"Пользователь {original_id} заблокирован администратором {message.from_user.id}")
+       
+    except ValueError:
+        await message.reply("Некорректный ID пользователя. Формат должен быть '#ID12345' или числовой ID.")
+    except Exception as e:
+        logger.error(f"Ошибка при блокировке пользователя: {e}")
+        await message.reply(f"Произошла ошибка при блокировке пользователя: {str(e)}")
+
+# Команда для разбана пользователя
+@dp.message(Command("unban"))
+async def unban_user(message: Message, command: CommandObject):
+    logger.info(f"Вызвана команда /unban с аргументами: {command.args}")
+   
+    # Проверяем, что команда вызвана в группе
+    if message.chat.id != GROUP_ID:
+        return
+   
+    # Проверяем, что пользователь является администратором
+    if not await is_admin(message.from_user.id):
+        await message.reply("У вас недостаточно прав для выполнения этой команды.")
+        return
+   
+    # Проверяем, что указан ID пользователя
+    if not command.args:
+        await message.reply("Пожалуйста, укажите ID пользователя для разблокировки.\nПример: /unban #ID12345")
+        return
+   
+    try:
+        # Обрабатываем ID формата #ID12345
+        user_id_str = command.args.strip()
+        
+        # Проверяем формат ID
+        if user_id_str.startswith("#ID"):
+            # Сохраняем ID в оригинальном формате для отображения
+            original_id = user_id_str
+            # Извлекаем числовую часть, удаляя префикс "#ID"
+            numeric_id = int(user_id_str[3:])
+        else:
+            # Пробуем обработать как обычный числовой ID
+            numeric_id = int(user_id_str)
+            original_id = str(numeric_id)
+       
+        # Проверяем, забанен ли пользователь
+        if numeric_id not in banned_users:
+            await message.reply(f"Пользователь с ID {original_id} не был заблокирован.")
+            return
+       
+        # Удаляем пользователя из списка забаненных
+        banned_users.remove(numeric_id)
+       
+        # Отправляем уведомление о разбане пользователю
+        try:
+            await bot.send_message(
+                chat_id=numeric_id,
+                text="Ваша блокировка была снята администратором журнала. Теперь вы снова можете отправлять свои произведения."
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление о разбане пользователю {original_id}: {e}")
+       
+        # Подтверждаем разбан в группе
+        await message.reply(f"Пользователь с ID {original_id} успешно разблокирован.")
+        logger.info(f"Пользователь {original_id} разблокирован администратором {message.from_user.id}")
+       
+    except ValueError:
+        await message.reply("Некорректный ID пользователя. Формат должен быть '#ID12345' или числовой ID.")
+    except Exception as e:
+        logger.error(f"Ошибка при разблокировке пользователя: {e}")
+        await message.reply(f"Произошла ошибка при разблокировке пользователя: {str(e)}")
+
+
+async def save_banned_users():
+    try:
+        with open('banned_users.json', 'w') as file:
+            json.dump(list(banned_users), file)
+        logger.info("Список забаненных пользователей успешно сохранен")
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении списка забаненных пользователей: {e}")
+
+# Функция для загрузки списка забаненных пользователей из файла
+async def load_banned_users():
+    global banned_users
+    try:
+        with open('banned_users.json', 'r') as file:
+            banned_list = json.load(file)
+            banned_users = set(banned_list)
+        logger.info(f"Список забаненных пользователей загружен: {banned_users}")
+    except FileNotFoundError:
+        logger.info("Файл со списком забаненных пользователей не найден. Используется пустой список.")
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке списка забаненных пользователей: {e}")
+
+
+
+
+
 async def main():
     await dp.start_polling(bot)
+    await load_banned_users()
+
 
 if __name__ == '__main__':
     asyncio.run(main())
