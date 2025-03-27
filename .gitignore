@@ -1,2 +1,11 @@
-# Created by venv; see https://docs.python.org/3/library/venv.html
-*
+# Python
+__pycache__/
+# Environment
+.env
+.venv
+
+# Dependencies
+message_mapping.pki
+
+# Потом и jsonчик надо засунуть но пока оставлю для доки?
+# banned_users.json
