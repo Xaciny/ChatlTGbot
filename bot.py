@@ -9,22 +9,19 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from pytz import UTC
 import json
 from pathlib import Path
 
 
-# Настройка логирования
+# логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Загрузка переменных окружения
 load_dotenv()
 TOKEN = os.getenv('TOKEN')
 GROUP_ID = int(os.getenv('GROUP_ID'))
 
-# Инициализация бота и диспетчера
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -138,9 +135,17 @@ async def forward_to_group(message: Message):
         await message.reply("Вы заблокированы администратором. Обратитесь в редакцию для разрешения ситуации.")
         return
     
+    reply_to_group_id = None
+    if message.reply_to_message:
+        for group_msg_id, info in message_mapping.items():
+            if info["user_id"] == message.from_user.id and info["user_message_id"] == message.reply_to_message.message_id:
+                reply_to_group_id = group_msg_id
+                break
+
     sent_message = await bot.send_message(
         chat_id=GROUP_ID,
-        text=f"Сообщение от {message.from_user.full_name} (@{message.from_user.username or 'без юзернейма'}):\n\n{message.text}\n\nID пользователя: #ID{message.from_user.id}"
+        text=f"Сообщение от {message.from_user.full_name} (@{message.from_user.username or 'без юзернейма'}):\n\n{message.text}\n\nID пользователя: #ID{message.from_user.id}",
+        reply_to_message_id=reply_to_group_id
     )
     message_mapping[sent_message.message_id] = {
         "user_id": message.from_user.id,
@@ -156,6 +161,7 @@ async def forward_media_to_group(message: Message):
         await message.reply("Вы заблокированы администратором. Обратитесь в редакцию для разрешения ситуации.")
         return
 
+    # Определяем тип медиа
     if message.photo:
         media = message.photo[-1]
         media_type = "photo"
@@ -171,15 +177,50 @@ async def forward_media_to_group(message: Message):
     else:
         return
 
-    # Отправляем медиа в группу
-    caption = f"Медиа от {message.from_user.full_name} (@{message.from_user.username or 'без юзернейма'}):\n\n{message.caption or ''}\n\nID пользователя: #ID{message.from_user.id}"
-    sent_message = await send_media(GROUP_ID, media_type, media.file_id, caption)
+    caption = (
+        f"Медиа от {message.from_user.full_name} "
+        f"(@{message.from_user.username or 'без юзернейма'}):\n\n"
+        f"{message.caption or ''}\n\n"
+        f"ID пользователя: #ID{message.from_user.id}"
+    )
 
-    if sent_message:
-        message_mapping[sent_message.message_id] = {
-            "user_id": message.from_user.id,
-            "user_message_id": message.message_id
-        }
+    # Ищем сообщение в группе, на которое нужно ответить
+    reply_to_group_id = None
+    if message.reply_to_message:
+        for group_msg_id, info in message_mapping.items():
+            if (
+                info["user_id"] == message.from_user.id
+                and info["user_message_id"] == message.reply_to_message.message_id
+            ):
+                reply_to_group_id = group_msg_id
+                break
+
+    # Отправляем медиа в группу
+    try:
+        if reply_to_group_id:
+            sent_message = await MEDIA_HANDLERS[media_type](
+                chat_id=GROUP_ID,
+                **{media_type: media.file_id},
+                caption=caption,
+                reply_to_message_id=reply_to_group_id
+            )
+        else:
+            sent_message = await send_media(
+                GROUP_ID,
+                media_type,
+                media.file_id,
+                caption=caption
+            )
+
+        # Сохраняем соответствие для будущих reply
+        if sent_message:
+            message_mapping[sent_message.message_id] = {
+                "user_id": message.from_user.id,
+                "user_message_id": message.message_id
+            }
+    except Exception as e:
+        logger.error(f"Ошибка при пересылке медиа в группу: {e}")
+
 
 @dp.message(lambda message: message.chat.id == GROUP_ID and message.reply_to_message)
 async def handle_reply(message: Message):
@@ -198,7 +239,9 @@ async def handle_reply(message: Message):
             try:
                 sent_message = await bot.send_message(
                     chat_id=original_user_id,
-                    text=f"Ответ редакции:\n\n{message.text}"
+                    text=f"Ответ редакции:\n\n{message.text}",
+                    reply_to_message_id=message_mapping[message.reply_to_message.message_id]["user_message_id"]
+                    if message.reply_to_message.message_id in message_mapping else None
                 )
                 message_mapping[message.message_id] = {
                     "user_id": original_user_id,
@@ -252,7 +295,7 @@ async def handle_edited_message(message: Message):
     
     logger.info(f"Найдено соответствие: User ID: {user_id}, User Message ID: {user_message_id}")
     
-    now = datetime.now(UTC)  # Используем UTC
+    now = datetime.now(UTC)  
     
     # Проверяем, что сообщение не старше 48 часов
     if now - message.date > timedelta(hours=48):
