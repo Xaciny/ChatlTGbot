@@ -23,8 +23,9 @@ jobs:
             set -e
             cd ~/bot || mkdir -p ~/bot && cd ~/bot
 
+            # Очистка старых файлов
             rm -rf *
-            exit 0
+
       - name: Copy project files
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -46,6 +47,8 @@ jobs:
             cd ~/bot
 
             docker compose down || true
+
             export BOT_TOKEN="${{ secrets.BOT_TOKEN }}"
-            export API_KEY="${{ secrets.API_KEY }}"
+            export GROUP_ID="${{ secrets.GROUP_ID }}"
+
             docker compose up -d --build

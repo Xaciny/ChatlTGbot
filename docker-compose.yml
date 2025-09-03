@@ -6,5 +6,5 @@ services:
     working_dir: /app
     command: python bot.py
     environment:
-      BOT_TOKEN: ${BOT_TOKEN}
-      API_KEY: ${API_KEY}
+      TOKEN: ${BOT_TOKEN}
+      GROUP_ID: ${GROUP_ID}
