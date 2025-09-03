@@ -1,0 +1,51 @@
+name: Deploy Bot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: github.actor == 'Xaciny'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+            cd ~/bot || mkdir -p ~/bot && cd ~/bot
+
+            rm -rf *
+            exit 0
+      - name: Copy project files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          source: "./*"
+          target: "~/bot"
+
+      - name: Setup and restart bot
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          script: |
+            cd ~/bot
+
+            docker compose down || true
+            export BOT_TOKEN="${{ secrets.BOT_TOKEN }}"
+            export API_KEY="${{ secrets.API_KEY }}"
+            docker compose up -d --build
