@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    container_name: chatl-bot
+    restart: unless-stopped
+    working_dir: /app
+    command: python bot.py
+    environment:
+      TOKEN: ${BOT_TOKEN}
+      GROUP_ID: ${GROUP_ID}
