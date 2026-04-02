@@ -8,3 +8,5 @@ services:
     environment:
       TOKEN: ${BOT_TOKEN}
       GROUP_ID: ${GROUP_ID}
+    volumes:
+      - ./welcome_message.txt:/app/welcome_message.txt:ro
