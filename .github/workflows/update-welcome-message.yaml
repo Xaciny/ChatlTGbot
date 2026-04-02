@@ -1,4 +1,4 @@
-name: Update Welcome Message (Simple)
+name: Update Welcome Message
 
 on:
   workflow_dispatch:
@@ -6,23 +6,24 @@ on:
       welcome_html:
         description: 'HTML текст приветственного сообщения'
         required: true
-        default: '<b>Новое содержание</b>'
-
+        default: |
+          <b>Вас приветствует редакция журнала смета-на-покаяние</b>
 jobs:
   update:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
-    
     - name: Create welcome message
       run: |
+        # Создаем файл с содержимым из input
         cat > welcome_message.txt << 'EOF'
         ${{ github.event.inputs.welcome_html }}
         EOF
         echo "✅ Welcome message created"
+        echo "📄 Preview:"
+        head -n 3 welcome_message.txt
     
-    - name: Copy and restart
+    - name: Copy file to server and restart bot
       uses: appleboy/ssh-action@v1.0.0
       with:
         host: ${{ secrets.SERVER_HOST }}
@@ -30,19 +31,38 @@ jobs:
         key: ${{ secrets.SERVER_SSH_KEY }}
         port: ${{ secrets.SERVER_PORT || 22 }}
         script: |
-          # Создаем директорию если нужно
+          # Создаем директорию проекта если её нет
           mkdir -p ${{ secrets.SERVER_PATH }}
           
-          # Копируем файл через cat (вместо SCP)
+          # Копируем файл на хост (туда, куда монтируется volume)
           cat > ${{ secrets.SERVER_PATH }}/welcome_message.txt << 'ENDSSH'
           ${{ github.event.inputs.welcome_html }}
           ENDSSH
           
-          # Проверяем файл
-          echo "📄 File content:"
-          cat ${{ secrets.SERVER_PATH }}/welcome_message.txt
+          # Проверяем что файл записался правильно
+          if [ ! -f ${{ secrets.SERVER_PATH }}/welcome_message.txt ]; then
+            echo "❌ Failed to create welcome_message.txt"
+            exit 1
+          fi
           
-          # Перезапускаем контейнер
+          echo "📄 File saved on host:"
+          ls -la ${{ secrets.SERVER_PATH }}/welcome_message.txt
+          echo ""
+          echo "📄 First 3 lines:"
+          head -n 3 ${{ secrets.SERVER_PATH }}/welcome_message.txt
+          
+          # Перезапускаем контейнер (volume перемонтируется автоматически)
+          echo "🔄 Restarting container..."
           docker restart chatl-bot
           
-          echo "✅ Update complete"
+          # Ждем немного и проверяем что контейнер запустился
+          sleep 3
+          if docker ps --format '{{.Names}}' | grep -q "^chatl-bot$"; then
+            echo "✅ Container chatl-bot is running"
+          else
+            echo "❌ Container failed to start"
+            docker logs chatl-bot --tail 20
+            exit 1
+          fi
+          
+          echo "✅ Update complete! New welcome message is active"
