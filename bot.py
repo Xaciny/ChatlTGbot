@@ -119,21 +119,28 @@ async def periodic_save():
         await save_banned_users()
 
 
+def load_welcome_message() -> str:
+    """Загружает приветственное сообщение из файла"""
+    welcome_file = Path('welcome_message.txt')
+    if welcome_file.exists():
+        try:
+            with open(welcome_file, 'r', encoding='utf-8') as f:
+                message = f.read().strip()
+                if message:
+                    logger.info("Приветственное сообщение загружено из файла")
+                    return message
+        except Exception as e:
+            logger.error(f"Ошибка при чтении файла welcome_message.txt: {e}")
+        logger.warning("Используется стандартное приветственное сообщение")
+    return ("Вас приветствует редакция журнала смета-на-покаяние")
+
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     logger.info("Обработчик send_welcome вызван")
+    welcome_text = load_welcome_message()
     await message.reply(
-        "Вас приветствует редакция журнала смета-на-покаяние\n\n"
-        "оставьте Ваш текст боту\n\n"
-        "мы будем очень благодарны,\n"
-        "если Вы в свободной форме\n"
-        "поделитесь мнением на тему\n"
-        "\"зачем поэзия?\"\n"
-        "(Ваш ответ будет опубликован вместе с текстом)\n\n"
-        "это не обязательно, но при отборе заявок приоритет будет\n"
-        "отдан текстам с комментариями\n\n"
-        "в ближайшее время мы примем решение о публикации\n\n"
-        "спасибо за участие в поэтическом процессе!"
+        welcome_text,
+        parse_mode=ParseMode.HTML  
     )
 
 @dp.message(lambda message: message.chat.type == "private" and message.text and not message.text.startswith('/'))
