@@ -35,21 +35,21 @@ jobs:
           mkdir -p ${{ secrets.SERVER_PATH }}
           
           # Копируем файл на хост (туда, куда монтируется volume)
-          cat > ${{ secrets.SERVER_PATH }}/welcome_message.txt << 'ENDSSH'
+          cat > ${{ secrets.SERVER_PATH }}/app/media/welcome_message.txt << 'ENDSSH'
           ${{ github.event.inputs.welcome_html }}
           ENDSSH
           
           # Проверяем что файл записался правильно
-          if [ ! -f ${{ secrets.SERVER_PATH }}/welcome_message.txt ]; then
+          if [ ! -f ${{ secrets.SERVER_PATH }}/app/media/welcome_message.txt ]; then
             echo "❌ Failed to create welcome_message.txt"
             exit 1
           fi
           
           echo "📄 File saved on host:"
-          ls -la ${{ secrets.SERVER_PATH }}/welcome_message.txt
+          ls -la ${{ secrets.SERVER_PATH }}/app/media/welcome_message.txt
           echo ""
           echo "📄 First 3 lines:"
-          head -n 3 ${{ secrets.SERVER_PATH }}/welcome_message.txt
+          head -n 3 ${{ secrets.SERVER_PATH }}/app/media/welcome_message.txt
           
           # Перезапускаем контейнер (volume перемонтируется автоматически)
           echo "🔄 Restarting container..."
