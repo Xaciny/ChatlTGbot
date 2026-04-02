@@ -9,4 +9,4 @@ services:
       TOKEN: ${BOT_TOKEN}
       GROUP_ID: ${GROUP_ID}
     volumes:
-      - ./welcome_message.txt:/app/welcome_message.txt:ro
+      - ./app/media/welcome_message.txt:/app/media/welcome_message.txt:ro
