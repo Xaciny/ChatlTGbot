@@ -121,7 +121,7 @@ async def periodic_save():
 
 def load_welcome_message() -> str:
     """Загружает приветственное сообщение из файла"""
-    welcome_file = Path('welcome_message.txt')
+    welcome_file = Path('/app/media/welcome_message.txt')
     if welcome_file.exists():
         try:
             with open(welcome_file, 'r', encoding='utf-8') as f:
