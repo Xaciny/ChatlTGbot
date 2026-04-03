@@ -3,8 +3,8 @@ name: Update Welcome Message
 on:
   workflow_dispatch:
     inputs:
-      welcome_html:
-        description: 'HTML текст приветственного сообщения'
+      welcome_html_base64:
+        description: 'Base64 encoded HTML текст (закодируйте текст тут: https://www.base64encode.org/)'
         required: true
 
 jobs:
@@ -12,51 +12,29 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Debug - Show raw input
+    - name: Decode and save
       run: |
-        echo "=== RAW INPUT ==="
-        echo "${{ github.event.inputs.welcome_html }}"
-        echo ""
-        echo "=== WITH ESCAPED NEWLINES ==="
-        echo "${{ github.event.inputs.welcome_html }}" | cat -A
-        echo ""
-        echo "=== CHARACTER COUNT ==="
-        echo "${{ github.event.inputs.welcome_html }}" | wc -c
-        echo ""
-        echo "=== LINE COUNT ==="
-        echo "${{ github.event.inputs.welcome_html }}" | wc -l
+        echo "${{ github.event.inputs.welcome_html_base64 }}" | base64 -d > welcome_message.txt
+        echo "=== DECODED FILE ==="
+        cat welcome_message.txt
     
-    - name: Debug - Save to file and show hex
-      run: |
-        cat > test_input.txt << 'EOF'
-        ${{ github.event.inputs.welcome_html }}
-        EOF
-        
-        echo "=== FILE CONTENT ==="
-        cat test_input.txt
-        echo ""
-        echo "=== HEX DUMP (first 200 chars) ==="
-        xxd test_input.txt | head -20
-        echo ""
-        echo "=== NEWLINES AS \\n ==="
-        cat test_input.txt | tr '\n' 'N' | tr '\r' 'R'
-        echo ""
-        
-    - name: Update welcome message
-      uses: appleboy/ssh-action@v1.0.0
+    - name: Copy to server
+      uses: appleboy/scp-action@v0.1.4
       with:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USER }}
         key: ${{ secrets.SERVER_SSH_KEY }}
         port: ${{ secrets.SERVER_PORT || 22 }}
+        source: "welcome_message.txt"
+        target: "${{ secrets.SERVER_PATH }}/app/media/"
+        overwrite: true
+    
+    - name: Update bot
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
         script: |
-          mkdir -p ${{ secrets.SERVER_PATH }}/app/media
-          
-          cat > ${{ secrets.SERVER_PATH }}/app/media/welcome_message.txt << 'EOF'
-          ${{ github.event.inputs.welcome_html }}
-          EOF
-          
-          # Просто перезапускаем бота
-          docker restart chatl-bot
-          
-          echo "✅ Bot restarted with new message"
+          touch ${{ secrets.SERVER_PATH }}/app/media/welcome_message.txt
+          echo "✅ Updated"
