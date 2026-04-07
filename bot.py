@@ -9,10 +9,12 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-from pytz import UTC
-import json
 from pathlib import Path
-
+from database import (
+    init_db, is_user_banned, add_banned_user, remove_banned_user,
+    get_all_banned_users, add_message_mapping, get_message_mapping,
+    get_user_message_mapping, set_last_editor_reply, get_last_editor_reply
+)
 
 # логирование
 logging.basicConfig(level=logging.INFO)
@@ -25,12 +27,8 @@ GROUP_ID = int(os.getenv('GROUP_ID'))
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Путь к файлу с забаненными пользователями
-BANNED_USERS_FILE = Path('banned_users.json')
-
-message_mapping = {}  # Маппинг сообщений
-banned_users = set()
-last_editor_reply = {}  # NEW: user_id -> последний ответ редакции в группе
+# Путь к файлу с приветственным сообщением
+WELCOME_FILE = Path('/app/media/welcome_message.txt')
 
 # Словарь для методов отправки медиа
 MEDIA_HANDLERS = {
@@ -40,7 +38,6 @@ MEDIA_HANDLERS = {
     "animation": bot.send_animation,
 }
 
-
 async def is_admin(user_id: int) -> bool:
     try:
         chat_member = await bot.get_chat_member(GROUP_ID, user_id)
@@ -49,8 +46,8 @@ async def is_admin(user_id: int) -> bool:
         logger.error(f"Ошибка при проверке статуса администратора: {e}")
         return False
 
-
 def extract_user_id(reply_message: Message) -> int:
+    """Извлекает ID пользователя из сообщения в группе"""
     try:
         if reply_message.text:
             id_str = reply_message.text.split("ID пользователя: ")[1].split("\n")[0].replace("#", "")
@@ -67,8 +64,8 @@ def extract_user_id(reply_message: Message) -> int:
         logger.error(f"Ошибка при извлечении ID пользователя: {e}")
         raise ValueError("Не удалось извлечь ID пользователя")
 
-
 async def send_media(chat_id: int, media_type: str, file_id: str, caption: str = None):
+    """Отправка медиа с обработкой ошибок"""
     handler = MEDIA_HANDLERS.get(media_type)
     if not handler:
         raise ValueError(f"Неизвестный тип медиа: {media_type}")
@@ -81,105 +78,68 @@ async def send_media(chat_id: int, media_type: str, file_id: str, caption: str =
         logger.error(f"Ошибка при отправке медиа: {e}")
     return None
 
-
-async def save_banned_users():
-    try:
-        data = list(banned_users)
-        with open(BANNED_USERS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info(f"Список забаненных пользователей сохранен ({len(data)} записей)")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения списка забаненных пользователей: {e}")
-
-
-async def load_banned_users():
-    global banned_users
-    if not BANNED_USERS_FILE.exists():
-        logger.info("Файл banned_users.json не найден, будет создан новый")
-        banned_users = set()
-        await save_banned_users()
-        return
-
-    try:
-        with open(BANNED_USERS_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        banned_users = set(data)
-        logger.info(f"Загружено {len(banned_users)} забаненных пользователей")
-    except json.JSONDecodeError:
-        logger.error("Ошибка чтения JSON файла, используется пустой список")
-        banned_users = set()
-    except Exception as e:
-        logger.error(f"Ошибка загрузки списка забаненных пользователей: {e}")
-        banned_users = set()
-
-
-async def periodic_save():
-    while True:
-        await asyncio.sleep(3600)
-        await save_banned_users()
-
-
 def load_welcome_message() -> str:
     """Загружает приветственное сообщение из файла"""
-    welcome_file = Path('/app/media/welcome_message.txt')
-    if welcome_file.exists():
+    if WELCOME_FILE.exists():
         try:
-            with open(welcome_file, 'r', encoding='utf-8') as f:
+            with open(WELCOME_FILE, 'r', encoding='utf-8') as f:
                 message = f.read().strip()
                 if message:
                     logger.info("Приветственное сообщение загружено из файла")
                     return message
         except Exception as e:
             logger.error(f"Ошибка при чтении файла welcome_message.txt: {e}")
-        logger.warning("Используется стандартное приветственное сообщение")
-    return ("Вас приветствует редакция журнала смета-на-покаяние")
+    logger.warning("Используется стандартное приветственное сообщение")
+    return "Вас приветствует редакция журнала смета-на-покаяние"
 
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
+    """Обработчик команды /start"""
     logger.info("Обработчик send_welcome вызван")
     welcome_text = load_welcome_message()
-    await message.reply(
-        welcome_text,
-        parse_mode=ParseMode.HTML  
-    )
+    await message.reply(welcome_text, parse_mode=ParseMode.HTML)
 
 @dp.message(lambda message: message.chat.type == "private" and message.text and not message.text.startswith('/'))
 async def forward_to_group(message: Message):
+    """Пересылка текстовых сообщений из лички в группу"""
     logger.info("Обработчик forward_to_group вызван")
 
-    if message.from_user.id in banned_users:
+    if await is_user_banned(message.from_user.id):
         await message.reply("Вы заблокированы администратором. Обратитесь в редакцию для разрешения ситуации.")
         return
 
+    # Проверяем, является ли сообщение ответом на сообщение редакции
     reply_to_group_id = None
     if message.reply_to_message:
-        for group_msg_id, info in message_mapping.items():
-            if info["user_id"] == message.from_user.id and info["user_message_id"] == message.reply_to_message.message_id:
-                reply_to_group_id = group_msg_id
-                break
-            
+        group_msg_id = await get_user_message_mapping(
+            message.from_user.id, 
+            message.reply_to_message.message_id
+        )
+        if group_msg_id:
+            reply_to_group_id = group_msg_id
+    
+    # Если это не ответ, используем последний ответ редакции
     if reply_to_group_id is None:
-        reply_to_group_id = last_editor_reply.get(message.from_user.id)
+        reply_to_group_id = await get_last_editor_reply(message.from_user.id)
 
     sent_message = await bot.send_message(
         chat_id=GROUP_ID,
         text=f"Сообщение от {message.from_user.full_name} (@{message.from_user.username or 'без юзернейма'}):\n\n{message.text}\n\nID пользователя: #ID{message.from_user.id}",
         reply_to_message_id=reply_to_group_id
     )
-    message_mapping[sent_message.message_id] = {
-        "user_id": message.from_user.id,
-        "user_message_id": message.message_id
-    }
-
+    
+    await add_message_mapping(sent_message.message_id, message.from_user.id, message.message_id)
 
 @dp.message(lambda message: message.chat.type == "private" and (message.photo or message.video or message.document or message.animation))
 async def forward_media_to_group(message: Message):
+    """Пересылка медиа из лички в группу"""
     logger.info("Обработчик forward_media_to_group вызван")
 
-    if message.from_user.id in banned_users:
+    if await is_user_banned(message.from_user.id):
         await message.reply("Вы заблокированы администратором. Обратитесь в редакцию для разрешения ситуации.")
         return
 
+    # Определяем тип медиа
     if message.photo:
         media = message.photo[-1]
         media_type = "photo"
@@ -202,18 +162,18 @@ async def forward_media_to_group(message: Message):
         f"ID пользователя: #ID{message.from_user.id}"
     )
 
+    # Проверяем, является ли сообщение ответом на сообщение редакции
     reply_to_group_id = None
     if message.reply_to_message:
-        for group_msg_id, info in message_mapping.items():
-            if (
-                info["user_id"] == message.from_user.id
-                and info["user_message_id"] == message.reply_to_message.message_id
-            ):
-                reply_to_group_id = group_msg_id
-                break
-
+        group_msg_id = await get_user_message_mapping(
+            message.from_user.id,
+            message.reply_to_message.message_id
+        )
+        if group_msg_id:
+            reply_to_group_id = group_msg_id
+    
     if reply_to_group_id is None:
-        reply_to_group_id = last_editor_reply.get(message.from_user.id)
+        reply_to_group_id = await get_last_editor_reply(message.from_user.id)
 
     try:
         if reply_to_group_id:
@@ -232,85 +192,81 @@ async def forward_media_to_group(message: Message):
             )
 
         if sent_message:
-            message_mapping[sent_message.message_id] = {
-                "user_id": message.from_user.id,
-                "user_message_id": message.message_id
-            }
+            await add_message_mapping(sent_message.message_id, message.from_user.id, message.message_id)
     except Exception as e:
         logger.error(f"Ошибка при пересылке медиа в группу: {e}")
 
-
 @dp.message(lambda message: message.chat.id == GROUP_ID and message.reply_to_message)
 async def handle_reply(message: Message):
+    """Обработка ответов редакции на сообщения в группе"""
     logger.info("Обработчик handle_reply вызван")
 
-    if message.reply_to_message.from_user.id == bot.id:
-        try:
-            original_user_id = extract_user_id(message.reply_to_message)
-            logger.info(f"Извлечённый ID пользователя: {original_user_id}")
-        except ValueError:
+    if message.reply_to_message.from_user.id != bot.id:
+        return
+        
+    try:
+        original_user_id = extract_user_id(message.reply_to_message)
+        logger.info(f"Извлечённый ID пользователя: {original_user_id}")
+    except ValueError:
+        return
+
+    # Получаем маппинг исходного сообщения
+    original_mapping = await get_message_mapping(message.reply_to_message.message_id)
+    
+    # Отправляем ответ пользователю в зависимости от типа контента
+    sent_message = None
+    
+    if message.text:
+        sent_message = await bot.send_message(
+            chat_id=original_user_id,
+            text=f"Ответ редакции:\n\n{message.text}",
+            reply_to_message_id=original_mapping["user_message_id"] if original_mapping else None
+        )
+    elif message.photo or message.video or message.document or message.animation:
+        # Определяем тип медиа
+        if message.photo:
+            media = message.photo[-1]
+            media_type = "photo"
+        elif message.video:
+            media = message.video
+            media_type = "video"
+        elif message.document:
+            media = message.document
+            media_type = "document"
+        elif message.animation:
+            media = message.animation
+            media_type = "animation"
+        else:
             return
 
-        if message.text:
-            try:
-                sent_message = await bot.send_message(
-                    chat_id=original_user_id,
-                    text=f"Ответ редакции:\n\n{message.text}",
-                    reply_to_message_id=message_mapping[message.reply_to_message.message_id]["user_message_id"]
-                    if message.reply_to_message.message_id in message_mapping else None
-                )
-                message_mapping[message.message_id] = {
-                    "user_id": original_user_id,
-                    "user_message_id": sent_message.message_id
-                }
-                last_editor_reply[original_user_id] = message.message_id  # NEW
-            except Exception as e:
-                logger.error(f"Ошибка при отправке текстового сообщения: {e}")
-
-        elif message.photo or message.video or message.document or message.animation:
-            if message.photo:
-                media = message.photo[-1]
-                media_type = "photo"
-            elif message.video:
-                media = message.video
-                media_type = "video"
-            elif message.document:
-                media = message.document
-                media_type = "document"
-            elif message.animation:
-                media = message.animation
-                media_type = "animation"
-            else:
-                return
-
-            caption = f"Материалы от редакции:\n\n{message.caption}" if message.caption else "Материалы от редакции"
-            sent_message = await send_media(original_user_id, media_type, media.file_id, caption)
-
-            if sent_message:
-                message_mapping[message.message_id] = {
-                    "user_id": original_user_id,
-                    "user_message_id": sent_message.message_id
-                }
-                last_editor_reply[original_user_id] = message.message_id  # NEW
-            else:
-                logger.error("Не удалось отправить медиа пользователю.")
-
+        caption = f"Материалы от редакции:\n\n{message.caption}" if message.caption else "Материалы от редакции"
+        sent_message = await send_media(original_user_id, media_type, media.file_id, caption)
+    
+    # Сохраняем маппинг для ответа редакции (общая логика для всех типов)
+    if sent_message:
+        await add_message_mapping(message.message_id, original_user_id, sent_message.message_id)
+        await set_last_editor_reply(original_user_id, message.message_id)
+        logger.info(f"✅ Сохранён маппинг для ответа: {message.message_id} -> {original_user_id}:{sent_message.message_id}")
+    else:
+        logger.error("Не удалось отправить ответ пользователю.")
 
 @dp.edited_message(lambda message: message.chat.id == GROUP_ID)
 async def handle_edited_message(message: Message):
+    """Обработка редактирования сообщений редакции"""
     logger.info(f"Обработчик handle_edited_message вызван. ID сообщения: {message.message_id}")
 
-    mapping_info = message_mapping.get(message.message_id)
-    if not mapping_info:
+    mapping = await get_message_mapping(message.message_id)
+    if not mapping:
         logger.error(f"Сообщение с ID {message.message_id} не найдено в отображении.")
         return
 
-    user_id = mapping_info["user_id"]
-    user_message_id = mapping_info["user_message_id"]
+    user_id = mapping["user_id"]
+    user_message_id = mapping["user_message_id"]
 
-    now = datetime.now(UTC)
+    now = datetime.now()
+    message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
 
-    if now - message.date > timedelta(hours=48):
+    if now - message_date > timedelta(hours=48):
         await bot.send_message(
             chat_id=user_id,
             text="Сообщение слишком старое для редактирования. Пожалуйста, свяжитесь с редакцией для уточнения."
@@ -336,9 +292,9 @@ async def handle_edited_message(message: Message):
             text="Редактирование медиа невозможно. Пожалуйста, свяжитесь с редакцией для уточнения."
         )
 
-
 @dp.message(Command("ban"))
 async def ban_user(message: Message, command: CommandObject):
+    """Блокировка пользователя"""
     logger.info(f"Вызвана команда /ban с аргументами: {command.args}")
 
     if message.chat.id != GROUP_ID:
@@ -361,9 +317,12 @@ async def ban_user(message: Message, command: CommandObject):
             numeric_id = int(user_id_str)
             original_id = str(numeric_id)
 
-        banned_users.add(numeric_id)
-        await save_banned_users()
+        if await is_user_banned(numeric_id):
+            await message.reply(f"Пользователь с ID {original_id} уже заблокирован.")
+            return
 
+        await add_banned_user(numeric_id, message.from_user.id)
+        
         try:
             await bot.send_message(
                 chat_id=numeric_id,
@@ -379,9 +338,9 @@ async def ban_user(message: Message, command: CommandObject):
         logger.error(f"Ошибка при блокировке пользователя: {e}")
         await message.reply(f"Произошла ошибка при блокировке пользователя: {str(e)}")
 
-
 @dp.message(Command("unban"))
 async def unban_user(message: Message, command: CommandObject):
+    """Разблокировка пользователя"""
     logger.info(f"Вызвана команда /unban с аргументами: {command.args}")
 
     if message.chat.id != GROUP_ID:
@@ -404,12 +363,11 @@ async def unban_user(message: Message, command: CommandObject):
             numeric_id = int(user_id_str)
             original_id = str(numeric_id)
 
-        if numeric_id not in banned_users:
+        if not await is_user_banned(numeric_id):
             await message.reply(f"Пользователь с ID {original_id} не был заблокирован.")
             return
 
-        banned_users.remove(numeric_id)
-        await save_banned_users()
+        await remove_banned_user(numeric_id)
 
         try:
             await bot.send_message(
@@ -426,12 +384,36 @@ async def unban_user(message: Message, command: CommandObject):
         logger.error(f"Ошибка при разблокировке пользователя: {e}")
         await message.reply(f"Произошла ошибка при разблокировке пользователя: {str(e)}")
 
+@dp.message(Command("listbanned"))
+async def list_banned_users(message: Message):
+    """Список забаненных пользователей"""
+    if message.chat.id != GROUP_ID:
+        return
+    
+    if not await is_admin(message.from_user.id):
+        await message.reply("У вас недостаточно прав для выполнения этой команды.")
+        return
+    
+    banned_users = await get_all_banned_users()
+    
+    if not banned_users:
+        await message.reply("Список забаненных пользователей пуст.")
+        return
+    
+    # Формируем список для вывода (не более 20 пользователей за раз)
+    banned_list = "\n".join([f"• #{user_id}" for user_id in list(banned_users)[:20]])
+    if len(banned_users) > 20:
+        banned_list += f"\n... и ещё {len(banned_users) - 20} пользователей"
+    
+    await message.reply(f"Забаненные пользователи:\n{banned_list}")
 
 async def main():
-    await load_banned_users()
-    asyncio.create_task(periodic_save())
+    """Главная функция запуска бота"""
+    # Инициализируем базу данных
+    await init_db()
+    
+    # Запускаем бота
     await dp.start_polling(bot)
-
 
 if __name__ == '__main__':
     asyncio.run(main())
