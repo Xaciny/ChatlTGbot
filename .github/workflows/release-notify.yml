@@ -1,0 +1,45 @@
+name: Release Notification (Simple)
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify-telegram:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Send release notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.GROUP_ID }}
+        run: |
+          # Формируем сообщение
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          RELEASE_NAME="${{ github.event.release.name }}"
+          RELEASE_URL="${{ github.event.release.html_url }}"
+          RELEASE_BODY="${{ github.event.release.body }}"
+          
+          MESSAGE="🎉 **New Release!** 🎉%0A"
+          MESSAGE+="%0A"
+          MESSAGE+="**Tag:** \`$RELEASE_TAG\`%0A"
+          MESSAGE+="**Name:** $RELEASE_NAME%0A"
+          MESSAGE+="**Repository:** ${{ github.repository }}%0A"
+          MESSAGE+="%0A"
+          MESSAGE+="**Link:** [Click to view]($RELEASE_URL)%0A"
+          MESSAGE+="%0A"
+          
+          if [ -n "$RELEASE_BODY" ]; then
+            # Экранируем специальные символы
+            RELEASE_BODY=$(echo "$RELEASE_BODY" | sed 's/"/\\"/g' | head -c 500)
+            MESSAGE+="**Description:**%0A\`\`\`%0A$RELEASE_BODY%0A\`\`\`%0A"
+          fi
+          
+          MESSAGE+="**Released by:** ${{ github.actor }}"
+          
+          # Отправляем в Telegram
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="$MESSAGE" \
+            -d parse_mode="Markdown" \
+            -d disable_web_page_preview="true"
