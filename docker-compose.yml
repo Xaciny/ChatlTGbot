@@ -1,12 +1,41 @@
 services:
+  db:
+    image: postgres:15-alpine
+    container_name: chatl-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chatl_bot
+      POSTGRES_USER: chatl_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatl_user -d chatl_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   bot:
     build: .
     container_name: chatl-bot
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     working_dir: /app
     command: python bot.py
     environment:
       TOKEN: ${BOT_TOKEN}
       GROUP_ID: ${GROUP_ID}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: chatl_bot
+      DB_USER: chatl_user
+      DB_PASSWORD: ${DB_PASSWORD}
     volumes:
       - ./app/media/welcome_message.txt:/app/media/welcome_message.txt:ro
+
+volumes:
+  postgres_data:

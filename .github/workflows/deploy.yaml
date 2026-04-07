@@ -50,5 +50,37 @@ jobs:
 
             export BOT_TOKEN="${{ secrets.BOT_TOKEN }}"
             export GROUP_ID="${{ secrets.GROUP_ID }}"
+            export DB_PASSWORD=${{ secrets.DB_PASSWORD }}
 
-            docker compose up -d --build
+            if docker ps --format '{{.Names}}' | grep -q "chatl-db"; then
+              echo "✅ Database is running, updating only bot..."
+              docker compose up -d --build bot
+            else
+              echo "🔄 Database not found, starting full stack..."
+              docker compose up -d --build
+            fi
+
+      - name: Send final notification
+        if: always()
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          script: |
+            BOT_TOKEN="${{ secrets.BOT_TOKEN }}"
+            CHAT_ID="${{ secrets.GROUP_ID }}"
+            
+            if [ "${{ job.status }}" == "success" ]; then
+              STATUS="✅ DEPLOY COMPLETED"
+            else
+              STATUS="❌ DEPLOY FAILED"
+            fi
+            
+            if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                -d chat_id="${CHAT_ID}" \
+                -d text="🏁 <b>Deploy ChatlBot Service - Final Status</b>%0A%0A<b>Status:</b> ${STATUS}%0A<b>Time:</b> $(date '+%Y-%m-%d %H:%M:%S')%0A<b>Commit:</b> ${{ github.sha }}%0A%0A#deploy #chatlbot" \
+                -d parse_mode="HTML" || true
+            fi
