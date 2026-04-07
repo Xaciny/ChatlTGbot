@@ -81,6 +81,6 @@ jobs:
             if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
                 -d chat_id="${CHAT_ID}" \
-                -d text="🏁 <b>Deploy ChatlBot Service - Final Status</b>%0A%0A<b>Status:</b> ${STATUS}%0A<b>Time:</b> $(date '+%Y-%m-%d %H:%M:%S')%0A<b>Commit:</b> ${{ github.sha }}%0A%0A#deploy #chatlbot" \
+                -d text="🏁 <b>Deploy ChatlBot Service - Final Status</b>%0A%0A<b>Status:</b> ${STATUS}%0A<b>Time:</b> $(date '+%Y-%m-%d %H:%M:%S')%0A<b>Commit:</b> ${{ github.sha }}%0A%0A#deploy" \
                 -d parse_mode="HTML" || true
             fi
