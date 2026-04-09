@@ -34,6 +34,7 @@ services:
       DB_NAME: chatl_bot
       DB_USER: chatl_user
       DB_PASSWORD: ${DB_PASSWORD}
+      TIMEWEB_API_TOKEN: ${TIMEWEB_API_TOKEN}
     volumes:
       - ./app/media/welcome_message.txt:/app/media/welcome_message.txt:ro
 
