@@ -50,7 +50,8 @@ jobs:
 
             export BOT_TOKEN="${{ secrets.BOT_TOKEN }}"
             export GROUP_ID="${{ secrets.GROUP_ID }}"
-            export DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            export DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+            export TIMEWEB_API_TOKEN="${{ secrets.TIMEWEB_API_TOKEN }}"
 
             if docker ps --format '{{.Names}}' | grep -q "chatl-db"; then
               echo "✅ Database is running, updating only bot..."
