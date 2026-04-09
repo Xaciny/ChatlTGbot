@@ -2,8 +2,10 @@ import logging
 from aiogram import Router, Bot
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
+from aiogram.enums import ParseMode
 from app.config.settings import settings
 from app.services import UserService
+from app.services.timeweb_service import TimewebService
 from app.handlers.common import is_admin
 
 logger = logging.getLogger(__name__)
@@ -119,3 +121,54 @@ async def list_banned_users(message: Message, bot: Bot):
         banned_list += f"\n... и ещё {len(banned_users) - 20} пользователей"
     
     await message.reply(f"Забаненные пользователи:\n{banned_list}")
+
+@admin_router.message(Command("balance"))
+async def check_balance(message: Message, bot: Bot):
+    logger.info("Вызвана команда /balance")
+    
+    if message.chat.id != settings.GROUP_ID:
+        return
+    
+    if not await is_admin(bot, message.from_user.id):
+        await message.reply("У вас недостаточно прав для выполнения этой команды.")
+        return
+    
+    timeweb = TimewebService(settings.TIMEWEB_API_TOKEN)
+    
+    loading_msg = await message.reply("🔄 Получаю информацию о балансе...")
+    
+    balance_data = await timeweb.get_balance()
+    account_status = await timeweb.get_account_status()
+    
+    if not balance_data:
+        await loading_msg.edit_text("❌ Не удалось получить информацию о балансе. Проверьте API токен.")
+        return
+    
+    balance = balance_data['balance']
+    currency = balance_data['currency']
+    hourly_cost = balance_data['hourly_cost']
+    monthly_cost = balance_data['monthly_cost']
+    daily_cost = hourly_cost * 24
+    days_remaining = int(balance / daily_cost) if daily_cost > 0 else 999
+    
+    status_text = "✅ Активен" if account_status and account_status.get('is_blocked', False) == False else "❌ Заблокирован"
+    
+    message_text = (
+        f"💰 **Информация о балансе Timeweb Cloud**\n\n"
+        f"💵 Текущий баланс: **{balance:.2f} {currency}**\n"
+        f"📊 Статус аккаунта: {status_text}\n\n"
+        f"📈 Расходы:\n"
+        f"• В час: {hourly_cost:.2f} {currency}\n"
+        f"• В день: {daily_cost:.2f} {currency}\n"
+        f"• В месяц: {monthly_cost:.2f} {currency}\n\n"
+        f"⏰ Дней до блокировки: **{days_remaining}**\n"
+    )
+    
+    if days_remaining < 1:
+        message_text += "\n🚨 **ВНИМАНИЕ! Средств хватит менее чем на 1 день! Пополните счет!**"
+    elif days_remaining < 3:
+        message_text += "\n⚠️ **Предупреждение: низкий баланс. Рекомендуется пополнить счет.**"
+    else:
+        message_text += "\n✅ Баланс в норме."
+    
+    await loading_msg.edit_text(message_text, parse_mode=ParseMode.MARKDOWN)
