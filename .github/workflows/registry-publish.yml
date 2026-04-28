@@ -1,0 +1,87 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main  
+    tags:
+      - '*' 
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Check if tags exist in registry
+        id: check-tags
+        run: |
+          # Получаем имя репозитория из GitHub
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          IMAGE_NAME="${{ secrets.DOCKER_USERNAME }}/${REPO_NAME}"
+          
+          # Получаем список всех локальных git-тегов
+          git fetch --tags
+          LOCAL_TAGS=$(git tag --points-at HEAD)
+          
+          # Если нет тегов на этом коммите, используем branch name
+          if [ -z "$LOCAL_TAGS" ]; then
+            LOCAL_TAGS="${{ github.ref_name }}"
+          fi
+          
+          # Проверяем каждый тег на существование в Docker Hub
+          TAGS_TO_PUSH=""
+          MISSING_TAGS=""
+          
+          echo "LOCAL_TAGS: $LOCAL_TAGS"
+          
+          for TAG in $LOCAL_TAGS; do
+            # Пробуем получить манифест образа из Docker Hub
+            if docker manifest inspect $IMAGE_NAME:$TAG > /dev/null 2>&1; then
+              echo "✅ Tag $TAG already exists in registry, skipping"
+            else
+              echo "❌ Tag $TAG not found in registry, will push"
+              MISSING_TAGS="$MISSING_TAGS $TAG"
+              TAGS_TO_PUSH="$TAGS_TO_PUSH $IMAGE_NAME:$TAG"
+            fi
+          done
+          
+          # Если все теги существуют, всё равно пушим как минимум один тег
+          # (например, latest или branch name)
+          if [ -z "$MISSING_TAGS" ]; then
+            echo "⚠️ All tags exist, but pushing anyway with branch/tag name"
+            DEFAULT_TAG="${{ github.ref_name }}"
+            TAGS_TO_PUSH="$IMAGE_NAME:$DEFAULT_TAG"
+            MISSING_TAGS="$DEFAULT_TAG"
+          fi
+          
+          echo "tags_to_push=$TAGS_TO_PUSH" >> $GITHUB_OUTPUT
+          echo "missing_tags=$MISSING_TAGS" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        if: steps.check-tags.outputs.missing_tags != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.check-tags.outputs.tags_to_push }}
+
+      - name: Push latest tag (only for version tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          IMAGE_NAME="${{ secrets.DOCKER_USERNAME }}/${REPO_NAME}"
+          docker buildx build --push --tag $IMAGE_NAME:latest .
