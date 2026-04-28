@@ -10,10 +10,18 @@ on:
         description: 'Specific tag to rebuild (leave empty for all missing)'
         required: false
         type: string
+      skip_tag:
+        description: 'Tag to skip building (e.g., v1.0.0)'
+        required: false
+        type: string
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write  # Нужно для пуша в GitHub Packages
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,12 +37,28 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Find missing tags and build them
         run: |
           # Приводим к нижнему регистру
           REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2 | tr '[:upper:]' '[:lower:]')
           DOCKER_USER=$(echo "${{ secrets.DOCKER_USERNAME }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_NAME="${DOCKER_USER}/${REPO_NAME}"
+          
+          # Имена для разных регистров
+          DOCKER_IMAGE="${DOCKER_USER}/${REPO_NAME}"
+          GHCR_IMAGE="ghcr.io/${{ github.repository_owner }}/${REPO_NAME}"
+          
+          # Приводим владельца ghcr к нижнему регистру
+          GHCR_IMAGE=$(echo "$GHCR_IMAGE" | tr '[:upper:]' '[:lower:]')
+          
+          echo "Docker Hub image: $DOCKER_IMAGE"
+          echo "GitHub Packages image: $GHCR_IMAGE"
           
           # Получаем список тегов для проверки
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && [[ -n "${{ github.event.inputs.specific_tag }}" ]]; then
@@ -48,19 +72,34 @@ jobs:
             TAGS_TO_CHECK="${{ github.ref_name }}"
           fi
           
-          echo "Image: $IMAGE_NAME"
+          # Тег для пропуска (если указан)
+          SKIP_TAG="${{ github.event.inputs.skip_tag }}"
+          if [[ -n "$SKIP_TAG" ]]; then
+            SKIP_TAG=$(echo "$SKIP_TAG" | tr '[:upper:]' '[:lower:]')
+            echo "⚠️ Will skip tag: $SKIP_TAG"
+          fi
+          
           echo "Will check tags: $TAGS_TO_CHECK"
           echo "---"
           
           # Перебираем каждый тег
+          BUILT_COUNT=0
           for TAG in $TAGS_TO_CHECK; do
             TAG_LOWER=$(echo "$TAG" | tr '[:upper:]' '[:lower:]')
             
+            # Проверяем, нужно ли пропустить этот тег
+            if [[ -n "$SKIP_TAG" ]] && [[ "$TAG_LOWER" == "$SKIP_TAG" ]]; then
+              echo "⏭️ Skipping tag $TAG_LOWER (explicitly skipped)"
+              echo "- ⏭️ Skipped \`$TAG_LOWER\` (user requested)" >> $GITHUB_STEP_SUMMARY
+              continue
+            fi
+            
             echo "Processing tag: $TAG_LOWER"
             
-            # Проверяем, существует ли уже образ
-            if docker manifest inspect $IMAGE_NAME:$TAG_LOWER > /dev/null 2>&1; then
+            # Проверяем, существует ли уже образ в Docker Hub
+            if docker manifest inspect $DOCKER_IMAGE:$TAG_LOWER > /dev/null 2>&1; then
               echo "✅ Tag $TAG_LOWER already exists in Docker Hub, skipping"
+              echo "- ⏭️ Skipped \`$TAG_LOWER\` (already exists in Docker Hub)" >> $GITHUB_STEP_SUMMARY
               continue
             fi
             
@@ -69,15 +108,17 @@ jobs:
             # Чекаутим код именно для этого тега
             git checkout $TAG
             
-            # Билдим и пушим
+            # Билдим с поддержкой нескольких платформ и пушим в оба регистра
             docker buildx build \
               --push \
-              --tag $IMAGE_NAME:$TAG_LOWER \
+              --tag $DOCKER_IMAGE:$TAG_LOWER \
+              --tag $GHCR_IMAGE:$TAG_LOWER \
               --platform linux/amd64,linux/arm64 \
               .
             
-            echo "✅ Successfully pushed $TAG_LOWER"
-            echo "- ✅ Pushed \`$TAG_LOWER\`" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Successfully pushed $TAG_LOWER to both registries"
+            echo "- ✅ Pushed \`$TAG_LOWER\` to Docker Hub and GitHub Packages" >> $GITHUB_STEP_SUMMARY
+            BUILT_COUNT=$((BUILT_COUNT + 1))
             echo "---"
             
             # Возвращаемся обратно (на случай, если понадобится для следующих тегов)
@@ -85,3 +126,8 @@ jobs:
           done
           
           echo "## Build complete" >> $GITHUB_STEP_SUMMARY
+          echo "Built $BUILT_COUNT tag(s)" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ $BUILT_COUNT -eq 0 ]]; then
+            echo "No new tags were built (all already exist or were skipped)" >> $GITHUB_STEP_SUMMARY
+          fi
