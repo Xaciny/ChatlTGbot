@@ -3,14 +3,13 @@ name: Build and Push Docker Image
 on:
   push:
     tags:
-      - '*'  # Запускаем только по созданию тегов (релизов)
+      - '*'
   workflow_dispatch:
     inputs:
-      check_all_tags:
-        description: 'Check and push all missing tags'
+      specific_tag:
+        description: 'Specific tag to rebuild (leave empty for all missing)'
         required: false
-        default: true
-        type: boolean
+        type: string
 
 jobs:
   build-and-push:
@@ -30,94 +29,59 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Get all git tags and check which are missing in Docker Hub
-        id: check-tags
+      - name: Find missing tags and build them
         run: |
-          # Приводим всё к нижнему регистру
+          # Приводим к нижнему регистру
           REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2 | tr '[:upper:]' '[:lower:]')
           DOCKER_USER=$(echo "${{ secrets.DOCKER_USERNAME }}" | tr '[:upper:]' '[:lower:]')
           IMAGE_NAME="${DOCKER_USER}/${REPO_NAME}"
           
-          echo "Image name: $IMAGE_NAME"
-          echo "Repository: $REPO_NAME"
-          
-          # Получаем ВСЕ git-теги в репозитории
-          git fetch --tags --force
-          ALL_TAGS=$(git tag -l)
-          
-          if [ -z "$ALL_TAGS" ]; then
-            echo "No git tags found in repository"
-            echo "missing_tags=" >> $GITHUB_OUTPUT
-            echo "tags_to_push=" >> $GITHUB_OUTPUT
-            exit 0
+          # Получаем список тегов для проверки
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && [[ -n "${{ github.event.inputs.specific_tag }}" ]]; then
+            # Ручной запуск с указанием конкретного тега
+            TAGS_TO_CHECK="${{ github.event.inputs.specific_tag }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Ручной запуск без указания - проверяем все теги
+            TAGS_TO_CHECK=$(git tag -l)
+          else
+            # Автоматический запуск по пушу тега
+            TAGS_TO_CHECK="${{ github.ref_name }}"
           fi
           
-          echo "Found git tags:"
-          echo "$ALL_TAGS"
+          echo "Image: $IMAGE_NAME"
+          echo "Will check tags: $TAGS_TO_CHECK"
           echo "---"
           
-          # Проверяем каждый тег в Docker Hub
-          TAGS_TO_PUSH=""
-          MISSING_TAGS=""
-          
-          for TAG in $ALL_TAGS; do
-            # Приводим тег к нижнему регистру
+          # Перебираем каждый тег
+          for TAG in $TAGS_TO_CHECK; do
             TAG_LOWER=$(echo "$TAG" | tr '[:upper:]' '[:lower:]')
             
-            echo -n "Checking tag '$TAG_LOWER'... "
+            echo "Processing tag: $TAG_LOWER"
             
-            # Пробуем получить манифест образа из Docker Hub
+            # Проверяем, существует ли уже образ
             if docker manifest inspect $IMAGE_NAME:$TAG_LOWER > /dev/null 2>&1; then
-              echo "✅ Already exists in Docker Hub"
-            else
-              echo "❌ MISSING - will push"
-              MISSING_TAGS="$MISSING_TAGS $TAG_LOWER"
-              # Собираем список тегов через запятую (важно!)
-              if [ -z "$TAGS_TO_PUSH" ]; then
-                TAGS_TO_PUSH="${IMAGE_NAME}:${TAG_LOWER}"
-              else
-                TAGS_TO_PUSH="${TAGS_TO_PUSH},${IMAGE_NAME}:${TAG_LOWER}"
-              fi
+              echo "✅ Tag $TAG_LOWER already exists in Docker Hub, skipping"
+              continue
             fi
+            
+            echo "❌ Tag $TAG_LOWER not found, building..."
+            
+            # Чекаутим код именно для этого тега
+            git checkout $TAG
+            
+            # Билдим и пушим
+            docker buildx build \
+              --push \
+              --tag $IMAGE_NAME:$TAG_LOWER \
+              --platform linux/amd64,linux/arm64 \
+              .
+            
+            echo "✅ Successfully pushed $TAG_LOWER"
+            echo "- ✅ Pushed \`$TAG_LOWER\`" >> $GITHUB_STEP_SUMMARY
+            echo "---"
+            
+            # Возвращаемся обратно (на случай, если понадобится для следующих тегов)
+            git checkout -
           done
           
-          # Убираем лишний пробел в начале
-          MISSING_TAGS=$(echo "$MISSING_TAGS" | sed 's/^ //')
-          
-          echo "---"
-          echo "Missing tags: $MISSING_TAGS"
-          echo "Tags to push: $TAGS_TO_PUSH"
-          
-          # Сохраняем как строку (с запятыми)
-          echo "tags_to_push=$TAGS_TO_PUSH" >> $GITHUB_OUTPUT
-          echo "missing_tags=$MISSING_TAGS" >> $GITHUB_OUTPUT
-          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
-
-      - name: Build and push missing tags
-        if: steps.check-tags.outputs.missing_tags != ''
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.check-tags.outputs.tags_to_push }}
-          # Теперь теги разделены запятыми, например:
-          # user/repo:1.0.0,user/repo:1.0.1,user/repo:1.0.2
-
-      - name: Summary of pushed tags
-        if: steps.check-tags.outputs.missing_tags != ''
-        run: |
-          echo "## ✅ Docker images pushed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** ${{ steps.check-tags.outputs.image_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tags pushed:**" >> $GITHUB_STEP_SUMMARY
-          # Разбиваем missing_tags по пробелам на несколько строк
-          for TAG in ${{ steps.check-tags.outputs.missing_tags }}; do
-            echo "- \`$TAG\`" >> $GITHUB_STEP_SUMMARY
-          done
-
-      - name: No missing tags
-        if: steps.check-tags.outputs.missing_tags == ''
-        run: |
-          echo "## ✅ All tags are already in Docker Hub" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "No new tags to push." >> $GITHUB_STEP_SUMMARY
+          echo "## Build complete" >> $GITHUB_STEP_SUMMARY
