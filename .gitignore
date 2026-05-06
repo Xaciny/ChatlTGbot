@@ -3,9 +3,3 @@ __pycache__/
 # Environment
 .env
 .venv
-
-# Dependencies
-message_mapping.pki
-
-# Потом и jsonчик надо засунуть но пока оставлю для доки?
-# banned_users.json
