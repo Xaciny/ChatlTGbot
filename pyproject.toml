@@ -1,0 +1,50 @@
+[project]
+name = "chatltgbot"
+version = "0.1.0"
+description = "Telegram bot"
+requires-python = ">=3.9"
+
+[tool.ruff]
+# Максимальная длина строки (стандарт Black - 88)
+line-length = 88
+
+# Какие файлы/папки игнорировать
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "migrations",
+]
+
+extend-include = ["*.py"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # Pycodestyle errors
+    "F",   # Pyflakes
+    "W",   # Pycodestyle warnings
+    "I",   # Сортировка импортов (isort)
+    "UP",  # Обновление кода до новых версий Python (pyupgrade)
+    "B",   # Опасные практики (flake8-bugbear)
+]
+
+ignore = [
+    "E501",   # Длинные строки (ruff сам форматирует)
+    "B008",   # Вызовы функций в дефолтных аргументах
+]
+
+extend-ignore = ["B011"]
+
+[tool.ruff.format]
+# Настройки форматирования
+quote-style = "double"    # Двойные кавычки
+indent-style = "space"    # Пробелы
+line-ending = "auto"      # Автоопределение
+
+# Группировка импортов
+[tool.ruff.lint.isort]
+known-first-party = ["app"]  # Ваши модули app.*
+combine-as-imports = true
