@@ -1,4 +1,0 @@
-aiogram==3.28.2
-aiohttp==3.11.11
-python-dotenv==1.2.2
-SQLAlchemy==2.0.50
