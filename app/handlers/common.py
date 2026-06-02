@@ -1,8 +1,11 @@
 import logging
+
 from aiogram import Bot
+
 from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
 
 async def is_admin(bot: Bot, user_id: int) -> bool:
     try:
